@@ -5,7 +5,7 @@ import requests
 from io import BytesIO
 from datetime import datetime, timedelta
 
-# --- 숫자 변환 보조 함수 (VBA ToNum 재현) ---
+# --- 숫자 변환 보조 함수 ---
 def to_num(v):
     if pd.isna(v) or v is None: return 0.0
     try:
@@ -14,14 +14,19 @@ def to_num(v):
         return float(s)
     except: return 0.0
 
-# --- 제목 줄 및 컬럼 매칭 보정 ---
-def get_clean_df(content, min_col='종목명'):
-    for i in range(10):
+# --- 🚩 무적 제목 찾기 함수 (에러 방지 핵심) ---
+def get_clean_df(content, target_keyword='종목명'):
+    # 상단 15줄까지 뒤지면서 키워드가 있는 줄을 찾습니다
+    for i in range(15):
         try:
             temp_df = pd.read_excel(BytesIO(content), skiprows=i)
-            if any(min_col in str(c) for c in temp_df.columns): return temp_df
+            # 컬럼명 중에 키워드가 포함되어 있는지 확인
+            if any(target_keyword in str(col) for col in temp_df.columns):
+                # 키워드가 포함된 정확한 컬럼명으로 리네임 (예: ' 종목명 ' -> '종목명')
+                new_cols = {col: target_keyword for col in temp_df.columns if target_keyword in str(col)}
+                return temp_df.rename(columns=new_cols)
         except: continue
-    return pd.read_excel(BytesIO(content))
+    return pd.DataFrame() # 못 찾으면 빈 데이터프레임 반환
 
 # --- 수급 데이터 추출 로직 ---
 def get_flow_data(row):
@@ -30,7 +35,6 @@ def get_flow_data(row):
     f_val = to_num(row[f_cols[0]]) if f_cols else 0.0
     i_val = to_num(row[i_cols[0]]) if i_cols else 0.0
     
-    # 수급 점수 계산 (VBA 로직 그대로)
     score = 0
     if f_val > 0: score += 40
     if i_val > 0: score += 40
@@ -66,28 +70,37 @@ if run_btn:
         e_str = end_date.strftime('%Y-%m-%d')
         date_list = pd.date_range(start_date, end_date).strftime('%Y-%m-%d').tolist()
         
-        with st.spinner('엑셀 결과 시트 동기화 중...'):
+        with st.spinner('데이터 전수 조사 및 분석 중...'):
             all_dfs = {}
             for d in date_list:
                 res = requests.get(f"https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/{d}.xlsx")
-                if res.status_code == 200: all_dfs[d] = get_clean_df(res.content)
+                if res.status_code == 200:
+                    clean_df = get_clean_df(res.content)
+                    if not clean_df.empty: all_dfs[d] = clean_df
 
             if e_str not in all_dfs:
-                st.error(f"종료일({e_str}) 데이터가 없습니다.")
+                st.error(f"종료일({e_str}) 또는 기간 내 유효한 데이터가 없습니다.")
             else:
                 main_df = all_dfs[e_str].copy()
                 
-                # 1. 수급 데이터 연동
+                # 1. 수급 데이터
                 res_f = requests.get(f"https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/{e_str}_수급.xlsx")
                 if res_f.status_code == 200:
-                    df_f = get_clean_df(res_f.content, min_col='외국인')
-                    flow_res = df_f.apply(get_flow_data, axis=1, result_type='expand')
-                    df_f['외국인순값'], df_f['기관순값'], df_f['수급점수'] = flow_res[0], flow_res[1], flow_res[2]
-                    main_df = pd.merge(main_df, df_f[['종목명', '외국인순값', '기관순값', '수급점수']], on='종목명', how='left')
+                    df_f = get_clean_df(res_f.content, target_keyword='외국인')
+                    # 종목명 찾기 (수급 파일용)
+                    if '종목명' not in df_f.columns:
+                        df_f = get_clean_df(res_f.content, target_keyword='종목명')
+                    
+                    if '종목명' in df_f.columns:
+                        flow_res = df_f.apply(get_flow_data, axis=1, result_type='expand')
+                        df_f['외국인순값'], df_f['기관순값'], df_f['수급점수'] = flow_res[0], flow_res[1], flow_res[2]
+                        main_df = pd.merge(main_df, df_f[['종목명', '외국인순값', '기관순값', '수급점수']], on='종목명', how='left')
 
-                # 2. 등장횟수 / 연속등장 / 계좌증가 계산
-                counts = pd.concat([df[['종목명']] for df in all_dfs.values() if '종목명' in df.columns]).groupby('종목명').size().to_dict()
-                main_df['등장횟수'] = main_df['종목명'].map(counts)
+                # 2. 등장횟수 / 연속등장 / 계좌증가
+                valid_dfs = [df[['종목명']] for df in all_dfs.values() if '종목명' in df.columns]
+                if valid_dfs:
+                    counts = pd.concat(valid_dfs).groupby('종목명').size().to_dict()
+                    main_df['등장횟수'] = main_df['종목명'].map(counts)
                 
                 con_dict = {}
                 for name in main_df['종목명'].unique():
@@ -103,30 +116,25 @@ if run_btn:
                     main_df = pd.merge(main_df, all_dfs[s_str][['종목명', '계좌수']], on='종목명', how='left', suffixes=('', '_시작'))
                     main_df['계좌수 증가'] = main_df['계좌수'].apply(to_num) - main_df['계좌수_시작'].apply(to_num).fillna(0)
 
-                # 3. DIVA 연동 및 상승률 계산
+                # 3. DIVA 및 상승률
                 res_v = requests.get("https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/DIVA.xlsx")
                 if res_v.status_code == 200:
                     v_df = get_clean_df(res_v.content)
-                    v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
-                    main_df = pd.merge(main_df, v_last, on='종목명', how='left', suffixes=('', '_v'))
+                    if not v_df.empty:
+                        v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
+                        main_df = pd.merge(main_df, v_last, on='종목명', how='left', suffixes=('', '_v'))
 
                 main_df.rename(columns={'날짜': '디바신호일', '종가': '기준종가', '현재가': '현재종가'}, inplace=True)
-                main_df['상승률'] = np.where(main_df['기준종가'] > 0, 
-                                          ((main_df['현재종가'].apply(to_num) - main_df['기준종가'].apply(to_num)) / main_df['기준종가'].apply(to_num) * 100).round(2), 0.0)
-
-                # 🚩 엑셀 RESULT 시트와 동일한 컬럼 순서
-                cols = ['순위', '종목코드', '종목명', '등장횟수', '연속등장', '계좌수 증가', '디바신호일', '기준종가', '현재종가', '상승률', '수급점수']
+                
+                # 컬럼 순서 및 필터링
+                cols = ['순위', '종목코드', '종목명', '등장횟수', '연속등장', '계좌수 증가', '디바신호일', '기준종가', '현재종가', '수급점수']
                 result_display = main_df[[c for c in cols if c in main_df.columns]].copy()
                 
                 if analysis_type == "내일 공략 top5":
                     result_display = result_display.sort_values(['등장횟수', '연속등장', '수급점수'], ascending=False).head(5)
 
                 st.subheader(f"✅ {analysis_type} 분석 리포트")
-                
-                # 디바 하이라이트 (노란색)
-                st.dataframe(result_display.style.apply(lambda row: ['background-color: #ffffcc' if pd.notna(row.get('디바신호일')) else '' for _ in row], axis=1).format({
-                    '현재종가': '{:,.0f}', '기준종가': '{:,.0f}', '계좌수 증가': '{:,.0f}', '상승률': '{:.2f}%', '수급점수': '{:,.0f}'
-                }, na_rep='-'), use_container_width=True)
+                st.dataframe(result_display.style.apply(lambda row: ['background-color: #ffffcc' if pd.notna(row.get('디바신호일')) else '' for _ in row], axis=1).format(precision=0, na_rep='-'), use_container_width=True)
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
