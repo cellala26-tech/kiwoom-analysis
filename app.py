@@ -14,13 +14,26 @@ def safe_to_num(v):
     except: return 0.0
 
 st.set_page_config(layout="wide", page_title="미미국밥 주식 분석기")
+
+# --- CSS로 버튼 디자인 살짝 변경 (VBA 느낌) ---
+st.markdown("""
+    <style>
+    div.stButton > button:first-child {
+        background-color: #f0f2f6;
+        border: 1px solid #d1d1d1;
+        width: 100%;
+        height: 3em;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 st.title("🍜 미미국밥 주식 분석 시스템")
 
 USER_ID = "cellala26-tech"
 REPO_NAME = "kiwoom-analysis" 
 GITHUB_BASE = f"https://raw.githubusercontent.com/{USER_ID}/{REPO_NAME}/main/data/"
 
-# --- 사이드바 설정 ---
+# --- 사이드바: VBA UserForm 구성 ---
 st.sidebar.header("📂 분석 설정")
 end_date = st.sidebar.date_input("기준일(종료일)", value=datetime(2026, 3, 11))
 analysis_type = st.sidebar.selectbox("📋 분석유형", [
@@ -29,69 +42,69 @@ analysis_type = st.sidebar.selectbox("📋 분석유형", [
     "수급 분석", "디바 일치 종목"
 ])
 
-# --- 메인 화면: 기간 선택 탭 (사장님 요청사항) ---
-st.write("### 📅 분석 기간 선택")
-tab5, tab10, tab20 = st.tabs(["최근 5일", "최근 10일", "최근 20일"])
+period_option = st.sidebar.selectbox("📅 분석 기간", ["최근 5일", "최근 10일", "최근 20일"])
 
-def run_analysis(days):
+# 드디어 부활한 [분석 실행] 버튼!
+run_btn = st.sidebar.button("🔍 분석 실행")
+
+# --- 메인 화면 결과 출력 ---
+if run_btn:
+    # 선택된 기간 계산
+    days = int(period_option.replace("최근 ", "").replace("일", ""))
+    s_date = end_date - timedelta(days=days)
+    
+    e_str = end_date.strftime('%Y-%m-%d')
+    s_str = s_date.strftime('%Y-%m-%d')
+    
     try:
-        e_str = end_date.strftime('%Y-%m-%d')
-        # 기준일로부터 n일 전 날짜 계산
-        s_date = end_date - timedelta(days=days)
-        s_str = s_date.strftime('%Y-%m-%d')
-        
-        with st.spinner(f'최근 {days}일 데이터 분석 중...'):
+        with st.spinner(f'{period_option} 데이터를 분석 중입니다...'):
             res_e = requests.get(f"{GITHUB_BASE}{e_str}.xlsx")
             res_s = requests.get(f"{GITHUB_BASE}{s_str}.xlsx")
             res_v = requests.get(f"{GITHUB_BASE}DIVA.xlsx")
 
             if res_e.status_code != 200:
-                st.warning(f"{e_str} 데이터가 없습니다.")
-                return
-
-            df_e = pd.read_excel(BytesIO(res_e.content))
-            if '종목명' not in df_e.columns: df_e = pd.read_excel(BytesIO(res_e.content), skiprows=3)
-
-            # 시작일 데이터와 대조
-            if res_s.status_code == 200:
-                df_s = pd.read_excel(BytesIO(res_s.content))
-                if '종목명' not in df_s.columns: df_s = pd.read_excel(BytesIO(res_s.content), skiprows=3)
-                
-                df_merged = pd.merge(df_e, df_s[['종목명', '계좌수']], on='종목명', how='left', suffixes=('_종료', '_시작'))
-                df_merged['증가폭(계좌)'] = df_merged['계좌수_종료'].apply(safe_to_num) - df_merged['계좌수_시작'].apply(safe_to_num).fillna(0)
+                st.error(f"기준일({e_str}) 데이터가 깃허브에 없습니다.")
             else:
-                df_merged = df_e.copy()
-                df_merged['증가폭(계좌)'] = 0
-                st.info(f"{s_str}({days}일 전) 데이터가 없어 증감폭 계산이 제한됩니다.")
+                df_e = pd.read_excel(BytesIO(res_e.content))
+                if '종목명' not in df_e.columns: df_e = pd.read_excel(BytesIO(res_e.content), skiprows=3)
 
-            # DIVA 연동
-            if res_v.status_code == 200:
-                v_df = pd.read_excel(BytesIO(res_v.content))
-                v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
-                df_merged = pd.merge(df_merged, v_last, on='종목명', how='left', suffixes=('', '_v'))
+                # 시작일 대조 및 증감 계산
+                if res_s.status_code == 200:
+                    df_s = pd.read_excel(BytesIO(res_s.content))
+                    if '종목명' not in df_s.columns: df_s = pd.read_excel(BytesIO(res_s.content), skiprows=3)
+                    
+                    df_merged = pd.merge(df_e, df_s[['종목명', '계좌수']], on='종목명', how='left', suffixes=('_종료', '_시작'))
+                    df_merged['증가폭(계좌)'] = df_merged['계좌수_종료'].apply(safe_to_num) - df_merged['계좌수_시작'].apply(safe_to_num).fillna(0)
+                else:
+                    df_merged = df_e.copy()
+                    st.warning(f"{s_str}({days}일 전) 데이터가 없어 비교 분석이 제외되었습니다.")
 
-            # 결과 출력
-            st.write(f"#### 📊 {days}일 분석 결과 ({s_str} ~ {e_str})")
-            
-            def style_diva(row):
-                is_v = any(pd.notna(row.get(c)) for c in row.index if '_v' in str(c) or '날짜' == str(c))
-                return ['background-color: #ffffcc' if is_v else '' for _ in row]
+                # DIVA 연동 (노란색 하이라이트)
+                if res_v.status_code == 200:
+                    v_df = pd.read_excel(BytesIO(res_v.content))
+                    v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
+                    df_merged = pd.merge(df_merged, v_last, on='종목명', how='left', suffixes=('', '_v'))
 
-            st.dataframe(df_merged.style.apply(style_diva, axis=1).format(na_rep='-'), use_container_width=True)
+                st.subheader(f"📊 {period_option} {analysis_type} 결과 ({s_str} ~ {e_str})")
+                
+                def style_diva(row):
+                    is_v = any(pd.notna(row.get(c)) for c in row.index if '_v' in str(c) or '날짜' == str(c))
+                    return ['background-color: #ffffcc' if is_v else '' for _ in row]
+
+                st.dataframe(df_merged.style.apply(style_diva, axis=1).format(na_rep='-'), use_container_width=True)
 
     except Exception as e:
-        st.error(f"오류: {e}")
+        st.error(f"오류 발생: {e}")
 
-# 각 탭 클릭 시 해당 기간 분석 실행
-with tab5:
-    run_analysis(5)
-with tab10:
-    run_analysis(10)
-with tab20:
-    run_analysis(20)
+else:
+    st.info("왼쪽 설정에서 날짜와 분석 유형을 선택한 후 [분석 실행] 버튼을 눌러주세요.")
 
-# --- 하단 버튼 (VBA 스타일) ---
+# --- 하단 버튼 공간 ---
 st.divider()
-if st.button("🚀 전체 데이터 다시 읽기"):
-    st.cache_data.clear()
-    st.rerun()
+col1, col2, col3 = st.columns(3)
+with col1:
+    if st.button("닫기"):
+        st.write("화면을 새로고침 하시면 초기화됩니다.")
+with col2:
+    if st.button("종목이력검색"):
+        st.write("🔍 검색 기능을 준비 중입니다.")
