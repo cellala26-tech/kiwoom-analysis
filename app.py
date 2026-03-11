@@ -15,7 +15,6 @@ def safe_to_num(v):
 
 def calc_flow_score(row):
     s = 0
-    # 외국인/기관 컬럼 유연하게 찾기
     f_col = [c for c in row.index if '외국인' in str(c) and ('순' in str(c) or '값' in str(c))]
     i_col = [c for c in row.index if '기관' in str(c) and ('순' in str(c) or '값' in str(c))]
     f_val = safe_to_num(row[f_col[0]]) if f_col else 0.0
@@ -42,10 +41,8 @@ USER_ID = "cellala26-tech"
 REPO_NAME = "kiwoom-analysis" 
 GITHUB_BASE = f"https://raw.githubusercontent.com/{USER_ID}/{REPO_NAME}/main/data/"
 
-# --- 사이드바: VBA UserForm 디자인 완벽 재현 ---
+# --- 사이드바 ---
 st.sidebar.header("📂 키움 TOP200 분석")
-
-# 1. 종료일/시작일 설정
 end_date = st.sidebar.date_input("📅 종료일(기준일)", value=datetime(2026, 3, 11))
 
 # 기간 퀵 설정 버튼
@@ -63,17 +60,9 @@ if 's_date' not in st.session_state:
 
 start_date = st.sidebar.date_input("📅 시작일", value=st.session_state.s_date)
 
-# 2. 분석유형 드롭다운 (사장님 요청사항 100% 반영)
 analysis_type = st.sidebar.selectbox("📋 분석유형", [
-    "신규진입종목", 
-    "계좌수 급증", 
-    "매수수량 급증", 
-    "순매매수량 급증", 
-    "잠복 세력", 
-    "super signal", 
-    "내일 공략 top5", 
-    "수급분석", 
-    "디바일치종목"
+    "신규진입종목", "계좌수 급증", "매수수량 급증", "순매매수량 급증", 
+    "잠복 세력", "super signal", "내일 공략 top5", "수급분석", "디바일치종목"
 ])
 
 run_btn = st.sidebar.button("🚀 분석 실행", use_container_width=True)
@@ -98,7 +87,7 @@ if run_btn:
                 if "매수수량" in analysis_type: target_col = '매수수량'
                 elif "순매매수량" in analysis_type: target_col = '순매매수량'
                 
-                # 시작일 대조 (비교 분석용)
+                # 시작일 대조
                 if res_s.status_code == 200:
                     df_s = get_clean_df(res_s.content)
                     if target_col in df_s.columns:
@@ -118,7 +107,7 @@ if run_btn:
                     v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
                     df_e = pd.merge(df_e, v_last, on='종목명', how='left', suffixes=('', '_v'))
 
-                # --- 분석유형별 정렬 및 필터 ---
+                # 분석 유형별 처리
                 final_df = df_e.copy()
                 if "급증" in analysis_type:
                     final_df = final_df.sort_values('증가폭', ascending=False)
@@ -126,9 +115,17 @@ if run_btn:
                     final_df = final_df[final_df[f'{target_col}_시작'].isna()]
                 elif analysis_type == "수급분석":
                     final_df = final_df.sort_values('수급점수', ascending=False)
-                elif analysis_type == "잠복 세력":
-                    final_df = final_df[(final_df['거래량'] < final_df['거래량'].median()) & (final_df['수급점수'] > 0)]
                 
-                # 컬럼 정리 및 출력
+                # 결과 출력
                 final_df.rename(columns={'날짜': '디바신호일', '종가': '기준종가', '현재가': '현재종가'}, inplace=True)
-                cols = ['순위', '종목명', f'시작 {target_col}', f'종료 {target_col}', '증가폭',
+                # 🚩 괄호 오타 수정된 부분
+                cols = ['순위', '종목명', f'시작 {target_col}', f'종료 {target_col}', '증가폭', '디바신호일', '기준종가', '현재종가', '수급점수']
+                display_df = final_df[[c for c in cols if c in final_df.columns]].copy()
+
+                st.subheader(f"📊 {analysis_type} 결과 ({s_str} ~ {e_str})")
+                st.dataframe(display_df.style.apply(lambda row: ['background-color: #ffffcc' if pd.notna(row.get('디바신호일')) else '' for _ in row], axis=1).format(na_rep='-', precision=0), use_container_width=True)
+            else:
+                st.error(f"기준일 데이터({e_str}.xlsx)가 없습니다.")
+
+    except Exception as e:
+        st.error(f"오류 발생: {e}")
