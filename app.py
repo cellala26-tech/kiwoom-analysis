@@ -46,17 +46,23 @@ def load_all_data():
         if not fname.endswith('.xlsx'): continue
 
         if 'DIVA' in fname.upper():
-            diva_df = pd.read_excel(fpath)
+            try:
+                diva_df = pd.read_excel(fpath)
+            except: pass
         elif '수급' in fname:
-            temp = pd.read_excel(fpath)
-            date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
-            if date_match: temp['날짜'] = date_match.group()
-            flow_list.append(temp)
+            try:
+                temp = pd.read_excel(fpath)
+                date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
+                if date_match: temp['날짜'] = date_match.group()
+                flow_list.append(temp)
+            except: pass
         else:
-            temp = pd.read_excel(fpath)
-            date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
-            if date_match: temp['날짜'] = date_match.group()
-            data_list.append(temp)
+            try:
+                temp = pd.read_excel(fpath)
+                date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
+                if date_match: temp['날짜'] = date_match.group()
+                data_list.append(temp)
+            except: pass
 
     full_data = pd.concat(data_list, ignore_index=True) if data_list else pd.DataFrame()
     full_flow = pd.concat(flow_list, ignore_index=True) if flow_list else pd.DataFrame()
@@ -78,4 +84,44 @@ if df_all_data is not None and not df_all_data.empty:
     if not df_diva.empty:
         diva_latest = df_diva.sort_values(by='날짜').groupby('종목명').last().reset_index()
         result = pd.merge(current_data, diva_latest[['종목명', '날짜', '종가']], on='종목명', how='left')
-        result.rename(columns={'날짜_y': '디바신호일', '종가': '기준종가', '날짜_x': '날
+        # 따옴표 오타 수정된 부분
+        result.rename(columns={'날짜_y': '디바신호일', '종가': '기준종가', '날짜_x': '날짜'}, inplace=True)
+    else:
+        result = current_data
+        result['디바신호일'] = np.nan
+        result['기준종가'] = 0
+
+    # 수급점수 합산
+    if not df_all_flow.empty:
+        flow_day = df_all_flow[df_all_flow['날짜'] == target_date].copy()
+        if not flow_day.empty:
+            flow_day['수급점수'] = flow_day.apply(calc_flow_score, axis=1)
+            result = pd.merge(result, flow_day[['종목명', '수급점수']], on='종목명', how='left')
+
+    # 상승률 계산
+    result['현재가'] = result['현재가'].apply(safe_to_num)
+    result['기준종가'] = result['기준종가'].apply(safe_to_num)
+    result['상승률(%)'] = np.where(result['기준종가'] > 0, 
+                               ((result['현재가'] - result['기준종가']) / result['기준종가'] * 100).round(2), 0.0)
+
+    # 화면 출력
+    st.subheader(f"📊 {target_date} 분석 결과")
+    
+    def style_rows(row):
+        return ['background-color: #ffffcc' if pd.notna(row.get('디바신호일')) else '' for _ in row]
+
+    st.dataframe(result.style.apply(style_rows, axis=1).format({
+        '현재가': '{:,.0f}', '기준종가': '{:,.0f}', '상승률(%)': '{:.2f}%', '수급점수': '{:.0f}'
+    }, na_rep='-'), use_container_width=True)
+
+    # 종목 이력 검색
+    st.divider()
+    search_stock = st.text_input("🔎 종목 이력 전체 검색 (ex: 삼성전자)")
+    if search_stock:
+        history = df_all_data[df_all_data['종목명'].str.contains(search_stock.upper(), na=False)].sort_values('날짜')
+        if not history.empty:
+            st.line_chart(history.set_index('날짜')['현재가'])
+            st.write(f"최초 진입: {history['날짜'].min()} | 등장 횟수: {len(history)}회")
+
+else:
+    st.warning("data 폴더에 엑셀 파일이 없거나 읽을 수 없습니다.")
