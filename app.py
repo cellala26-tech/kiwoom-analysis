@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 
 # 1. 숫자 변환 보조 함수
 def safe_to_num(v):
@@ -12,7 +13,7 @@ def safe_to_num(v):
     except:
         return 0.0
 
-# 2. 수급 점수 계산 함수
+# 2. 수급 점수 계산 함수 (VBA CalcFlowScore 로직)
 def calc_flow_score(row):
     s = 0
     f_net = safe_to_num(row.get('외국인순값', 0))
@@ -28,65 +29,48 @@ def calc_flow_score(row):
 
 # --- 웹 화면 설정 ---
 st.set_page_config(layout="wide", page_title="미미국밥 주식 분석기")
-st.title("🍜 미미국밥 주식 분석 시스템")
+st.title("🍜 미미국밥 통합 주식 분석기 (다중 파일 지원)")
 
-st.sidebar.header("📂 데이터 업로드")
-uploaded_file = st.sidebar.file_uploader("엑셀 파일을 업로드하세요", type=['xlsx'])
+# 사이드바 설정
+st.sidebar.header("📂 데이터 일괄 업로드")
+st.sidebar.info("키움TOP200 파일과 수급 파일을 한꺼번에 선택해서 올려주세요.")
 
-if uploaded_file:
-    try:
-        # 데이터 읽기
-        df_data = pd.read_excel(uploaded_file, sheet_name='DATA')
-        df_diva = pd.read_excel(uploaded_file, sheet_name='DIVA')
-        
-        # 날짜 선택
-        all_dates = sorted(df_data['날짜'].unique(), reverse=True)
-        target_date = st.sidebar.selectbox("분석 기준일 선택", all_dates)
-        
-        # 데이터 처리
-        day_data = df_data[df_data['날짜'] == target_date].copy()
-        
-        # DIVA 신호 매칭 (VBA 모듈 3 로직)
-        diva_summary = df_diva.sort_values(by='날짜').groupby('종목명').last().reset_index()
-        result = pd.merge(day_data, diva_summary[['종목명', '날짜', '종가']], on='종목명', how='left')
-        result.rename(columns={'날짜_y': '디바신호일', '종가': '기준종가', '날짜_x': '날짜'}, inplace=True)
-        
-        # 수급점수 처리 (FLOW 시트가 있는 경우)
-        try:
-            df_flow = pd.read_excel(uploaded_file, sheet_name='FLOW')
-            flow_day = df_flow[df_flow['날짜'] == target_date].copy()
-            if not flow_day.empty:
-                flow_day['수급점수'] = flow_day.apply(calc_flow_score, axis=1)
-                result = pd.merge(result, flow_day[['종목코드', '수급점수']], on='종목코드', how='left')
-        except:
-            pass
+# 다중 파일 업로드 활성화 (accept_multiple_files=True)
+uploaded_files = st.sidebar.file_uploader(
+    "여러 개의 엑셀 파일을 선택하세요", 
+    type=['xlsx'], 
+    accept_multiple_files=True
+)
 
-        # 결과 가공
-        result['현재가'] = result['현재가'].apply(safe_to_num)
-        result['기준종가'] = result['기준종가'].apply(safe_to_num)
-        result['상승률(%)'] = np.where(result['기준종가'] > 0, 
-                                   ((result['현재가'] - result['기준종가']) / result['기준종가'] * 100).round(2), 0)
+if uploaded_files:
+    data_list = []
+    flow_list = []
+    diva_df = pd.DataFrame()
 
-        # 테이블 출력 (하이라이트)
-        st.subheader(f"📊 {target_date} 분석 결과")
-        
-        def highlight_diva(row):
-            return ['background-color: #ffffcc' if pd.notna(row['디바신호일']) else '' for _ in row]
+    with st.spinner('파일들을 통합 분석 중입니다...'):
+        for file in uploaded_files:
+            fname = file.name
+            # 1. DIVA 파일 처리 (파일명에 'DIVA'가 포함된 경우나 특정 시트)
+            if 'DIVA' in fname.upper():
+                diva_df = pd.read_excel(file)
+            
+            # 2. 수급 파일 처리 (파일명에 '수급' 포함된 경우)
+            elif '수급' in fname:
+                temp_df = pd.read_excel(file)
+                # 파일명에서 날짜 추출 (예: 2026-03-06)
+                date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
+                if date_match:
+                    temp_df['날짜'] = date_match.group()
+                flow_list.append(temp_df)
+            
+            # 3. 일반 키움 TOP200 파일 (날짜만 있는 경우)
+            else:
+                temp_df = pd.read_excel(file)
+                date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
+                if date_match:
+                    temp_df['날짜'] = date_match.group()
+                data_list.append(temp_df)
 
-        st.dataframe(result.style.apply(highlight_diva, axis=1).format({
-            '현재가': '{:,.0f}', '기준종가': '{:,.0f}', '상승률(%)': '{:.2f}%'
-        }), use_container_width=True)
-
-        # 종목 검색 (SearchHistory)
-        st.divider()
-        search_q = st.text_input("🔎 종목명 이력 검색 (ex: 삼성전자)")
-        if search_q:
-            history = df_data[df_data['종목명'].str.contains(search_q.upper(), na=False)].sort_values('날짜')
-            if not history.empty:
-                st.line_chart(history.set_index('날짜')['현재가'])
-                st.write(f"최초 진입: {history['날짜'].min()} | 누적 등장: {len(history)}회")
-
-    except Exception as e:
-        st.error(f"오류가 발생했습니다: {e}")
-else:
-    st.info("왼쪽 사이드바에서 엑셀 파일을 업로드해주세요.")
+    # 데이터 통합
+    if data_list:
+        all_data = pd.concat(data_list, ignore_index=True
