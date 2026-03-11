@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 import requests
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- 1. VBA의 ToNum 함수 재현 (숫자 변환) ---
+# --- 숫자 변환 함수 (VBA ToNum 재현) ---
 def to_num(v):
     if pd.isna(v) or v is None: return 0.0
     try:
@@ -13,13 +13,7 @@ def to_num(v):
         return float(s) if s not in ['', '-', 'nan', 'NaN'] else 0.0
     except: return 0.0
 
-# --- 2. VBA의 종목코드 포맷 재현 (000250 형태) ---
-def format_code(v):
-    if pd.isna(v) or v is None: return ""
-    try: return str(int(to_num(v))).zfill(6)
-    except: return str(v).strip()
-
-# --- 3. 엑셀 제목 줄 자동 찾기 (VBA의 Range 찾기 로직) ---
+# --- 엑셀 로드 및 클리닝 ---
 def get_clean_df(content, target_keyword='종목명'):
     for i in range(15):
         try:
@@ -27,94 +21,82 @@ def get_clean_df(content, target_keyword='종목명'):
             matches = [col for col in temp_df.columns if target_keyword in str(col)]
             if matches:
                 temp_df = temp_df.loc[:, ~temp_df.columns.duplicated()]
-                df = temp_df.rename(columns={matches[0]: target_keyword})
-                if '종목코드' in df.columns: df['종목코드'] = df['종목코드'].apply(format_code)
-                return df
+                return temp_df.rename(columns={matches[0]: target_keyword})
         except: continue
     return pd.DataFrame()
 
-# --- 4. VBA의 수급 점수 계산 로직 (40/40/60) ---
-def calc_vba_score(row):
-    f_val = to_num(row.get('외국인순매수수량', 0))
-    i_val = to_num(row.get('기관순매수수량', 0))
-    score = 0
-    if f_val > 0: score += 40
-    if i_val > 0: score += 40
-    if f_val > 0 and i_val > 0: score += 60
-    return score
+st.set_page_config(layout="wide", page_title="키움 VBA 웹 시스템")
+st.title("🖥️ 키움 통합 분석 시스템 (VBA 로직 완벽 이식)")
 
-st.set_page_config(layout="wide", page_title="키움 VBA 웹 이식 시스템")
-st.title("🖥️ 키움 통합 분석 시스템 (VBA 엔진)")
-
-# --- 사이드바 설정 (VBA UserForm 구성과 동일하게) ---
+# --- 사이드바 설정 ---
 st.sidebar.header("📂 분석 설정")
-start_date = st.sidebar.date_input("📅 시작일", value=datetime(2026, 3, 5))
-end_date = st.sidebar.date_input("📅 종료일", value=datetime(2026, 3, 11))
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    start_date = st.sidebar.date_input("📅 시작일", value=datetime(2026, 3, 5))
+with col2:
+    end_date = st.sidebar.date_input("📅 종료일", value=datetime(2026, 3, 11))
 
-analysis_type = st.sidebar.selectbox("📋 분석유형", [
-    "내일 공략 TOP5", "신규진입 종목", "계좌수 급증", "매수수량 급증", "순매매수량 급증", "수급 분석"
-])
-
-run_btn = st.sidebar.button("🚀 분석 실행 (VBA 로직 가동)", use_container_width=True)
+run_btn = st.sidebar.button("🚀 내일 공략 TOP5 분석 실행", use_container_width=True)
 
 if run_btn:
     try:
         GITHUB_BASE = "https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/"
         e_str = end_date.strftime('%Y-%m-%d')
-        date_list = pd.date_range(start_date, end_date).strftime('%Y-%m-%d').tolist()
+        s_str = start_date.strftime('%Y-%m-%d')
         
-        with st.spinner('VBA 로직으로 데이터를 정밀 분석 중...'):
-            # [Step 1] 기간 내 모든 수급 파일 읽기 (등장횟수 계산용)
-            flow_data_list = []
-            for d in date_list:
-                res = requests.get(f"{GITHUB_BASE}{d}_수급.xlsx")
-                if res.status_code == 200:
-                    df = get_clean_df(res.content, '종목명')
-                    if not df.empty:
-                        df['분석날짜'] = d
-                        flow_data_list.append(df)
-            
-            if not flow_data_list:
-                st.error("분석할 수급 데이터가 기간 내에 없습니다.")
+        with st.spinner('VBA 분석 엔진 가동 중...'):
+            # 1. 🚩 FLOW.xlsx (정답지) 로드
+            res_flow = requests.get(f"{GITHUB_BASE}FLOW.xlsx")
+            if res_flow.status_code != 200:
+                st.error("FLOW.xlsx 파일을 찾을 수 없습니다.")
             else:
-                # [Step 2] VBA의 FLOW 집계 로직 재현
-                all_flow = pd.concat(flow_data_list)
-                counts = all_flow.groupby('종목명').size().reset_index(name='등장횟수')
+                flow_df = get_clean_df(res_flow.content, '종목명')
+                date_col = flow_df.columns[0]
+                flow_df[date_col] = pd.to_datetime(flow_df[date_col]).dt.strftime('%Y-%m-%d')
                 
-                # 오늘(종료일) 데이터 추출
-                today_df = all_flow[all_flow['분석날짜'] == e_str].copy()
-                today_df['수급점수'] = today_df.apply(calc_vba_score, axis=1)
-                
-                # [Step 3] TOP200 파일과 매칭 (순위, 계좌수 등)
-                res_top = requests.get(f"{GITHUB_BASE}{e_str}.xlsx")
-                if res_top.status_code == 200:
-                    top_df = get_clean_df(res_top.content, '종목명')
-                    if '현재가' in top_df.columns: top_df.rename(columns={'현재가': '현재종가'}, inplace=True)
-                    today_df = pd.merge(today_df, top_df[['종목명', '순위', '종목코드', '계좌수', '현재종가']], on='종목명', how='left')
+                # 기간 필터링
+                mask = (flow_df[date_col] >= s_str) & (flow_df[date_col] <= e_str)
+                period_data = flow_df.loc[mask].copy()
 
-                # [Step 4] DIVA 연동 (상승률 계산용)
-                res_v = requests.get(f"{GITHUB_BASE}DIVA.xlsx")
-                if res_v.status_code == 200:
-                    v_df = get_clean_df(res_v.content, '종목명')
-                    v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
-                    v_last.rename(columns={'날짜': '디바신호일', '종가': '기준종가'}, inplace=True)
-                    today_df = pd.merge(today_df, v_last[['종목명', '디바신호일', '기준종가']], on='종목명', how='left')
+                if period_data.empty:
+                    st.warning("선택 기간의 데이터가 없습니다.")
+                else:
+                    # 2. 🚩 VBA 핵심 로직: 등장횟수 및 수급점수 집계
+                    stats = period_data.groupby('종목명').size().reset_index(name='등장횟수')
+                    
+                    # 종료일 기준 수급 점수 및 데이터
+                    today_data = period_data[period_data[date_col] == e_str].copy()
+                    score_col = [c for c in today_data.columns if '점수' in str(c)][0]
+                    
+                    # 데이터 병합
+                    final_df = pd.merge(today_data, stats, on='종목명', how='left')
+                    
+                    # 3. 🚩 TOP200 파일에서 종목 정보 가져오기
+                    res_top = requests.get(f"{GITHUB_BASE}{e_str}.xlsx")
+                    if res_top.status_code == 200:
+                        top_df = get_clean_df(res_top.content, '종목명')
+                        # 현재가 -> 현재종가
+                        price_col = [c for c in top_df.columns if '현재' in str(c) or '종가' in str(c)]
+                        if price_col: top_df.rename(columns={price_col[0]: '현재종가'}, inplace=True)
+                        
+                        final_df = pd.merge(final_df, top_df[['종목명', '순위', '종목코드', '계좌수', '현재종가']], on='종목명', how='left')
 
-                # [Step 5] 최종 수치 계산 및 등장횟수 병합
-                today_df = pd.merge(today_df, counts, on='종목명', how='left')
-                today_df['연속등장'] = today_df['등장횟수'].apply(lambda x: f"{len(flow_data_list)} YES" if x >= len(flow_data_list) else "NO")
-                today_df['상승률'] = np.where(today_df['기준종가'] > 0, 
-                                           ((today_df['현재종가'].apply(to_num) - today_df['기준종가'].apply(to_num)) / today_df['기준종가'].apply(to_num) * 100).round(2), 0.0)
+                    # 4. 🚩 [내일 공략 TOP5] 정렬 기준 (VBA와 동일)
+                    # 기준: 등장횟수(내림) -> 수급점수(내림) -> 순위(오름)
+                    final_df = final_df.sort_values(
+                        by=['등장횟수', score_col, '순위'], 
+                        ascending=[False, False, True]
+                    )
 
-                # [Step 6] VBA의 정렬 로직 (등장횟수 -> 수급점수)
-                final = today_df.sort_values(['등장횟수', '수급점수'], ascending=[False, False])
-                
-                # [Step 7] 화면 출력
-                cols = ['순위', '종목코드', '종목명', '등장횟수', '연속등장', '계좌수', '현재종가', '상승률', '수급점수']
-                display = final[[c for c in cols if c in final.columns]].head(5 if "TOP5" in analysis_type else 100)
+                    # 5. 출력 컬럼 및 포맷 (사장님 RESULT 시트 재현)
+                    cols = ['순위', '종목코드', '종목명', '등장횟수', score_col, '계좌수', '현재종가']
+                    result_top5 = final_df[cols].head(5)
 
-                st.subheader(f"✅ {analysis_type} 분석 결과 (웹 실행 모드)")
-                st.dataframe(display.style.apply(lambda row: ['background-color: #ffffcc' if pd.notna(row.get('디바신호일')) else '' for _ in row], axis=1).format(precision=0, na_rep='-'), use_container_width=True)
+                    st.subheader(f"📊 내일 공략 TOP 5 ({e_str})")
+                    st.table(result_top5.style.format(precision=0, na_rep='-')) # 표 형식으로 깔끔하게
+
+                    with st.expander("🔍 전체 분석 리스트 보기"):
+                        st.dataframe(final_df[cols].style.format(precision=0), use_container_width=True)
 
     except Exception as e:
         st.error(f"오류 발생: {e}")
