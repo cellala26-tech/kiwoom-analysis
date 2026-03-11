@@ -70,4 +70,63 @@ if run_btn:
             all_dfs = {}
             for d in date_list:
                 res = requests.get(f"https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/{d}.xlsx")
-                if res.status_code == 200: all_dfs[d] = get_clean_
+                if res.status_code == 200: all_dfs[d] = get_clean_df(res.content)
+
+            if e_str not in all_dfs:
+                st.error(f"종료일({e_str}) 데이터가 없습니다.")
+            else:
+                main_df = all_dfs[e_str].copy()
+                
+                # 1. 수급 데이터 연동
+                res_f = requests.get(f"https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/{e_str}_수급.xlsx")
+                if res_f.status_code == 200:
+                    df_f = get_clean_df(res_f.content, min_col='외국인')
+                    flow_res = df_f.apply(get_flow_data, axis=1, result_type='expand')
+                    df_f['외국인순값'], df_f['기관순값'], df_f['수급점수'] = flow_res[0], flow_res[1], flow_res[2]
+                    main_df = pd.merge(main_df, df_f[['종목명', '외국인순값', '기관순값', '수급점수']], on='종목명', how='left')
+
+                # 2. 등장횟수 / 연속등장 / 계좌증가 계산
+                counts = pd.concat([df[['종목명']] for df in all_dfs.values() if '종목명' in df.columns]).groupby('종목명').size().to_dict()
+                main_df['등장횟수'] = main_df['종목명'].map(counts)
+                
+                con_dict = {}
+                for name in main_df['종목명'].unique():
+                    status = f"{len(all_dfs)} YES"
+                    for d in reversed(date_list):
+                        if d in all_dfs and name not in all_dfs[d]['종목명'].values:
+                            status = "NO"; break
+                    con_dict[name] = status
+                main_df['연속등장'] = main_df['종목명'].map(con_dict)
+
+                s_str = start_date.strftime('%Y-%m-%d')
+                if s_str in all_dfs:
+                    main_df = pd.merge(main_df, all_dfs[s_str][['종목명', '계좌수']], on='종목명', how='left', suffixes=('', '_시작'))
+                    main_df['계좌수 증가'] = main_df['계좌수'].apply(to_num) - main_df['계좌수_시작'].apply(to_num).fillna(0)
+
+                # 3. DIVA 연동 및 상승률 계산
+                res_v = requests.get("https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/DIVA.xlsx")
+                if res_v.status_code == 200:
+                    v_df = get_clean_df(res_v.content)
+                    v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
+                    main_df = pd.merge(main_df, v_last, on='종목명', how='left', suffixes=('', '_v'))
+
+                main_df.rename(columns={'날짜': '디바신호일', '종가': '기준종가', '현재가': '현재종가'}, inplace=True)
+                main_df['상승률'] = np.where(main_df['기준종가'] > 0, 
+                                          ((main_df['현재종가'].apply(to_num) - main_df['기준종가'].apply(to_num)) / main_df['기준종가'].apply(to_num) * 100).round(2), 0.0)
+
+                # 🚩 엑셀 RESULT 시트와 동일한 컬럼 순서
+                cols = ['순위', '종목코드', '종목명', '등장횟수', '연속등장', '계좌수 증가', '디바신호일', '기준종가', '현재종가', '상승률', '수급점수']
+                result_display = main_df[[c for c in cols if c in main_df.columns]].copy()
+                
+                if analysis_type == "내일 공략 top5":
+                    result_display = result_display.sort_values(['등장횟수', '연속등장', '수급점수'], ascending=False).head(5)
+
+                st.subheader(f"✅ {analysis_type} 분석 리포트")
+                
+                # 디바 하이라이트 (노란색)
+                st.dataframe(result_display.style.apply(lambda row: ['background-color: #ffffcc' if pd.notna(row.get('디바신호일')) else '' for _ in row], axis=1).format({
+                    '현재종가': '{:,.0f}', '기준종가': '{:,.0f}', '계좌수 증가': '{:,.0f}', '상승률': '{:.2f}%', '수급점수': '{:,.0f}'
+                }, na_rep='-'), use_container_width=True)
+
+    except Exception as e:
+        st.error(f"오류 발생: {e}")
