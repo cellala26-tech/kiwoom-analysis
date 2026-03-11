@@ -14,7 +14,7 @@ def safe_to_num(v):
     except:
         return 0.0
 
-# 2. 수급 점수 계산 (VBA 로직)
+# 2. 수급 점수 계산
 def calc_flow_score(row):
     s = 0
     f_net = safe_to_num(row.get('외국인순값', 0))
@@ -28,8 +28,8 @@ def calc_flow_score(row):
 st.set_page_config(layout="wide", page_title="미미국밥 주식 분석기")
 st.title("🍜 미미국밥 자동 분석 시스템")
 
-# 깃허브 data 폴더 경로
-DATA_DIR = "data"
+# 🚩 경로 수정 부분: 서버 환경에서도 절대 경로로 인식하게 함
+DATA_DIR = os.path.join(os.getcwd(), "data")
 
 @st.cache_data
 def load_all_data():
@@ -37,6 +37,7 @@ def load_all_data():
     flow_list = []
     diva_df = pd.DataFrame()
 
+    # 폴더가 없으면 생성 시도 (에러 방지)
     if not os.path.exists(DATA_DIR):
         return None, None, None
 
@@ -45,24 +46,21 @@ def load_all_data():
         fpath = os.path.join(DATA_DIR, fname)
         if not fname.endswith('.xlsx'): continue
 
-        if 'DIVA' in fname.upper():
-            try:
+        try:
+            if 'DIVA' in fname.upper():
                 diva_df = pd.read_excel(fpath)
-            except: pass
-        elif '수급' in fname:
-            try:
+            elif '수급' in fname:
                 temp = pd.read_excel(fpath)
                 date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
                 if date_match: temp['날짜'] = date_match.group()
                 flow_list.append(temp)
-            except: pass
-        else:
-            try:
+            else:
                 temp = pd.read_excel(fpath)
                 date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
                 if date_match: temp['날짜'] = date_match.group()
                 data_list.append(temp)
-            except: pass
+        except:
+            continue
 
     full_data = pd.concat(data_list, ignore_index=True) if data_list else pd.DataFrame()
     full_flow = pd.concat(flow_list, ignore_index=True) if flow_list else pd.DataFrame()
@@ -82,14 +80,11 @@ if df_all_data is not None and not df_all_data.empty:
     
     # DIVA 연동
     if not df_diva.empty:
-        diva_latest = df_diva.sort_values(by='날짜').groupby('종목명').last().reset_index()
-        result = pd.merge(current_data, diva_latest[['종목명', '날짜', '종가']], on='종목명', how='left')
-        # 따옴표 오타 수정된 부분
-        result.rename(columns={'날짜_y': '디바신호일', '종가': '기준종가', '날짜_x': '날짜'}, inplace=True)
+        diva_latest = df_diva.sort_values(by=df_diva.columns[0]).groupby('종목명').last().reset_index()
+        result = pd.merge(current_data, diva_latest, on='종목명', how='left', suffixes=('', '_diva'))
     else:
         result = current_data
         result['디바신호일'] = np.nan
-        result['기준종가'] = 0
 
     # 수급점수 합산
     if not df_all_flow.empty:
@@ -98,30 +93,27 @@ if df_all_data is not None and not df_all_data.empty:
             flow_day['수급점수'] = flow_day.apply(calc_flow_score, axis=1)
             result = pd.merge(result, flow_day[['종목명', '수급점수']], on='종목명', how='left')
 
-    # 상승률 계산
+    # 상승률 및 포맷팅
     result['현재가'] = result['현재가'].apply(safe_to_num)
-    result['기준종가'] = result['기준종가'].apply(safe_to_num)
-    result['상승률(%)'] = np.where(result['기준종가'] > 0, 
-                               ((result['현재가'] - result['기준종가']) / result['기준종가'] * 100).round(2), 0.0)
-
+    
     # 화면 출력
     st.subheader(f"📊 {target_date} 분석 결과")
     
     def style_rows(row):
-        return ['background-color: #ffffcc' if pd.notna(row.get('디바신호일')) else '' for _ in row]
+        # DIVA 시트에서 넘어온 신호가 있는지 확인 (컬럼명은 엑셀에 따라 다를 수 있음)
+        is_diva = any(pd.notna(row.get(c)) for c in row.index if '신호' in str(c) or '날짜_diva' in str(c))
+        return ['background-color: #ffffcc' if is_diva else '' for _ in row]
 
     st.dataframe(result.style.apply(style_rows, axis=1).format({
-        '현재가': '{:,.0f}', '기준종가': '{:,.0f}', '상승률(%)': '{:.2f}%', '수급점수': '{:.0f}'
+        '현재가': '{:,.0f}', '수급점수': '{:.0f}'
     }, na_rep='-'), use_container_width=True)
 
     # 종목 이력 검색
     st.divider()
-    search_stock = st.text_input("🔎 종목 이력 전체 검색 (ex: 삼성전자)")
+    search_stock = st.text_input("🔎 종목 이력 검색")
     if search_stock:
         history = df_all_data[df_all_data['종목명'].str.contains(search_stock.upper(), na=False)].sort_values('날짜')
         if not history.empty:
             st.line_chart(history.set_index('날짜')['현재가'])
-            st.write(f"최초 진입: {history['날짜'].min()} | 등장 횟수: {len(history)}회")
-
 else:
-    st.warning("data 폴더에 엑셀 파일이 없거나 읽을 수 없습니다.")
+    st.warning("data 폴더 내의 파일을 불러올 수 없습니다. 파일명에 날짜(2026-03-06)가 포함되어 있는지 확인해주세요.")
