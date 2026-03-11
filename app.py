@@ -4,6 +4,7 @@ import numpy as np
 import requests
 from io import BytesIO
 
+# 숫자 변환 보조 함수
 def safe_to_num(v):
     if pd.isna(v) or v is None: return 0.0
     try:
@@ -11,6 +12,7 @@ def safe_to_num(v):
         return float(s) if s not in ['', '-', 'nan'] else 0.0
     except: return 0.0
 
+# 수급 점수 계산 로직
 def calc_flow_score(row):
     s = 0
     f_net = safe_to_num(row.get('외국인순값', 0))
@@ -21,7 +23,7 @@ def calc_flow_score(row):
     return s
 
 st.set_page_config(layout="wide", page_title="미미국밥 주식 분석기")
-st.title("🍜 미미국밥 주식 분석기 (최종 진화형)")
+st.title("🍜 미미국밥 주식 분석 시스템 (통합 Ver.)")
 
 USER_ID = "cellala26-tech"
 REPO_NAME = "kiwoom-analysis" 
@@ -32,50 +34,55 @@ target_date = st.sidebar.text_input("날짜 입력 (예: 2026-03-10)", value="20
 
 if st.sidebar.button("데이터 불러오기"):
     try:
-        # 1. 파일들 가져오기
-        d_resp = requests.get(f"{GITHUB_BASE}{target_date}.xlsx")
-        f_resp = requests.get(f"{GITHUB_BASE}{target_date}_수급.xlsx")
-        v_resp = requests.get(f"{GITHUB_BASE}DIVA.xlsx")
+        # 파일 요청
+        d_res = requests.get(f"{GITHUB_BASE}{target_date}.xlsx")
+        f_res = requests.get(f"{GITHUB_BASE}{target_date}_수급.xlsx")
+        v_res = requests.get(f"{GITHUB_BASE}DIVA.xlsx")
 
-        if d_resp.status_code == 200:
-            df = pd.read_excel(BytesIO(d_resp.content))
+        if d_res.status_code == 200:
+            df = pd.read_excel(BytesIO(d_res.content))
             
-            # 2. 수급 데이터가 있으면 점수 계산
-            if f_resp.status_code == 200:
-                f_df = pd.read_excel(BytesIO(f_resp.content))
-                f_df['수급점수'] = f_df.apply(calc_flow_score, axis=1)
-                df = pd.merge(df, f_df[['종목명', '수급점수']], on='종목명', how='left')
+            # 🚩 [보정] 종목명 컬럼이 없으면 찾아내기
+            if '종목명' not in df.columns:
+                # 첫 번째 줄이 비어있는 경우 대비
+                df = pd.read_excel(BytesIO(d_res.content), skiprows=1)
             
-            # 3. DIVA 매칭
-            if v_resp.status_code == 200:
-                v_df = pd.read_excel(BytesIO(v_resp.content))
-                v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
-                df = pd.merge(df, v_last[['종목명', '날짜', '종가']], on='종목명', how='left', suffixes=('', '_v'))
+            # 수급 데이터 통합
+            if f_res.status_code == 200:
+                f_df = pd.read_excel(BytesIO(f_res.content))
+                # 수급 시트도 헤더 확인
+                if '종목명' not in f_df.columns:
+                    f_df = pd.read_excel(BytesIO(f_res.content), skiprows=1)
+                
+                if '종목명' in f_df.columns:
+                    f_df['수급점수'] = f_df.apply(calc_flow_score, axis=1)
+                    df = pd.merge(df, f_df[['종목명', '수급점수']], on='종목명', how='left')
+            
+            # DIVA 데이터 통합
+            if v_res.status_code == 200:
+                v_df = pd.read_excel(BytesIO(v_res.content))
+                if '종목명' not in v_df.columns:
+                    v_df = pd.read_excel(BytesIO(v_res.content), skiprows=1)
+                
+                if '종목명' in v_df.columns:
+                    v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
+                    df = pd.merge(df, v_last, on='종목명', how='left', suffixes=('', '_v'))
 
-            # 데이터 정제 (불필요한 컬럼 제거)
-            cols_to_keep = ['순위', '종목코드', '종목명', '현재가', '등락률', '거래량', '수급점수', '날짜_v', '종가_v']
-            # 실제로 존재하는 컬럼만 선택
-            existing_cols = [c for c in cols_to_keep if c in df.columns]
-            final_df = df[existing_cols].copy()
+            # 컬럼 정리
+            df['현재가'] = df['현재가'].apply(safe_to_num)
             
-            # 상승률 계산
-            final_df['현재가'] = final_df['현재가'].apply(safe_to_num)
-            if '종가_v' in final_df.columns:
-                final_df['상승률(%)'] = np.where(final_df['종가_v'] > 0, 
-                                            ((final_df['현재가'] - final_df['종가_v']) / final_df['종가_v'] * 100).round(2), 0.0)
-
-            st.subheader(f"📊 {target_date} 분석 리포트")
+            st.subheader(f"📊 {target_date} 분석 결과")
             
+            # 스타일 함수
             def bg_color(row):
-                # DIVA 날짜(날짜_v)가 있으면 노란색 하이라이트
-                color = '#ffffcc' if pd.notna(row.get('날짜_v')) else ''
-                return [f'background-color: {color}' for _ in row]
+                # DIVA 연동 컬럼(보통 마지막 쪽에 생김)이 비어있지 않으면 노란색
+                is_diva = any(pd.notna(row.get(c)) for c in row.index if '_v' in str(c))
+                return ['background-color: #ffffcc' if is_diva else '' for _ in row]
 
-            st.dataframe(final_df.style.apply(bg_color, axis=1).format({
-                '현재가': '{:,.0f}', '종가_v': '{:,.0f}', '수급점수': '{:.0f}', '상승률(%)': '{:.2f}%'
-            }, na_rep='-'), use_container_width=True)
+            st.dataframe(df.style.apply(bg_color, axis=1).format({'현재가': '{:,.0f}'}, na_rep='-'), use_container_width=True)
             
         else:
-            st.error(f"{target_date}.xlsx 파일을 찾을 수 없습니다.")
+            st.error(f"{target_date}.xlsx 파일을 깃허브에서 찾을 수 없습니다.")
     except Exception as e:
-        st.error(f"오류 발생: {e}")
+        st.error(f"분석 중 오류 발생: {e}")
+        st.info("팁: 엑셀 파일의 첫 번째 줄에 제목(종목명, 현재가 등)이 있는지 확인해주세요.")
