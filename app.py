@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
+import requests
+from io import BytesIO
 import re
 
 # 1. 숫자 변환 보조 함수
@@ -28,92 +29,65 @@ def calc_flow_score(row):
 st.set_page_config(layout="wide", page_title="미미국밥 주식 분석기")
 st.title("🍜 미미국밥 자동 분석 시스템")
 
-# 🚩 경로 수정 부분: 서버 환경에서도 절대 경로로 인식하게 함
-DATA_DIR = os.path.join(os.getcwd(), "data")
+# 🚩 사장님 깃허브 정보 (파일을 직접 긁어오기 위한 설정)
+GITHUB_BASE_URL = "https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/"
 
+# 사장님이 올리신 파일 목록 (서버에서 파일명을 못 읽을 때를 대비해 최근 날짜 위주로 자동 매칭)
 @st.cache_data
-def load_all_data():
-    data_list = []
-    flow_list = []
-    diva_df = pd.DataFrame()
-
-    # 폴더가 없으면 생성 시도 (에러 방지)
-    if not os.path.exists(DATA_DIR):
+def load_data_from_github(date_str):
+    try:
+        # 1. 메인 데이터 로드
+        data_url = f"{GITHUB_BASE_URL}{date_str}.xlsx"
+        resp_data = requests.get(data_url)
+        if resp_data.status_code != 200: return None, None, None
+        df_data = pd.read_excel(BytesIO(resp_data.content))
+        
+        # 2. 수급 데이터 로드 (선택 사항)
+        flow_url = f"{GITHUB_BASE_URL}{date_str}_수급.xlsx"
+        resp_flow = requests.get(flow_url)
+        df_flow = pd.read_excel(BytesIO(resp_flow.content)) if resp_flow.status_code == 200 else pd.DataFrame()
+        
+        # 3. DIVA 데이터 로드 (고정 파일명일 가능성이 높음)
+        diva_url = f"{GITHUB_BASE_URL}DIVA.xlsx" # 만약 파일명이 다르면 수정 필요
+        resp_diva = requests.get(diva_url)
+        df_diva = pd.read_excel(BytesIO(resp_diva.content)) if resp_diva.status_code == 200 else pd.DataFrame()
+        
+        return df_data, df_flow, df_diva
+    except:
         return None, None, None
 
-    files = os.listdir(DATA_DIR)
-    for fname in files:
-        fpath = os.path.join(DATA_DIR, fname)
-        if not fname.endswith('.xlsx'): continue
+# 사이드바에서 분석할 날짜 입력 (파일 목록을 못 가져오므로 직접 선택)
+st.sidebar.header("🗓️ 날짜 설정")
+target_date = st.sidebar.text_input("분석할 날짜를 입력하세요 (예: 2026-03-10)", value="2026-03-10")
 
-        try:
-            if 'DIVA' in fname.upper():
-                diva_df = pd.read_excel(fpath)
-            elif '수급' in fname:
-                temp = pd.read_excel(fpath)
-                date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
-                if date_match: temp['날짜'] = date_match.group()
-                flow_list.append(temp)
-            else:
-                temp = pd.read_excel(fpath)
-                date_match = re.search(r'\d{4}-\d{2}-\d{2}', fname)
-                if date_match: temp['날짜'] = date_match.group()
-                data_list.append(temp)
-        except:
-            continue
-
-    full_data = pd.concat(data_list, ignore_index=True) if data_list else pd.DataFrame()
-    full_flow = pd.concat(flow_list, ignore_index=True) if flow_list else pd.DataFrame()
+if st.sidebar.button("데이터 불러오기"):
+    df_data, df_flow, df_diva = load_data_from_github(target_date)
     
-    return full_data, full_flow, diva_df
+    if df_data is not None:
+        result = df_data.copy()
+        
+        # DIVA 연동
+        if not df_diva.empty:
+            diva_latest = df_diva.sort_values(by=df_diva.columns[0]).groupby('종목명').last().reset_index()
+            result = pd.merge(result, diva_latest, on='종목명', how='left', suffixes=('', '_diva'))
+        
+        # 수급 점수 계산
+        if not df_flow.empty:
+            df_flow['수급점수'] = df_flow.apply(calc_flow_score, axis=1)
+            result = pd.merge(result, df_flow[['종목명', '수급점수']], on='종목명', how='left')
+        
+        result['현재가'] = result['현재가'].apply(safe_to_num)
+        
+        st.subheader(f"📊 {target_date} 분석 결과")
+        
+        def style_rows(row):
+            is_diva = any(pd.notna(row.get(c)) for c in row.index if '신호' in str(c) or 'diva' in str(c))
+            return ['background-color: #ffffcc' if is_diva else '' for _ in row]
 
-# 데이터 로딩
-df_all_data, df_all_flow, df_diva = load_all_data()
-
-if df_all_data is not None and not df_all_data.empty:
-    # 날짜 선택
-    all_dates = sorted(df_all_data['날짜'].unique(), reverse=True)
-    target_date = st.sidebar.selectbox("📅 분석 날짜 선택", all_dates)
-    
-    # 분석 로직
-    current_data = df_all_data[df_all_data['날짜'] == target_date].copy()
-    
-    # DIVA 연동
-    if not df_diva.empty:
-        diva_latest = df_diva.sort_values(by=df_diva.columns[0]).groupby('종목명').last().reset_index()
-        result = pd.merge(current_data, diva_latest, on='종목명', how='left', suffixes=('', '_diva'))
+        st.dataframe(result.style.apply(style_rows, axis=1).format({
+            '현재가': '{:,.0f}', '수급점수': '{:.0f}'
+        }, na_rep='-'), use_container_width=True)
     else:
-        result = current_data
-        result['디바신호일'] = np.nan
-
-    # 수급점수 합산
-    if not df_all_flow.empty:
-        flow_day = df_all_flow[df_all_flow['날짜'] == target_date].copy()
-        if not flow_day.empty:
-            flow_day['수급점수'] = flow_day.apply(calc_flow_score, axis=1)
-            result = pd.merge(result, flow_day[['종목명', '수급점수']], on='종목명', how='left')
-
-    # 상승률 및 포맷팅
-    result['현재가'] = result['현재가'].apply(safe_to_num)
-    
-    # 화면 출력
-    st.subheader(f"📊 {target_date} 분석 결과")
-    
-    def style_rows(row):
-        # DIVA 시트에서 넘어온 신호가 있는지 확인 (컬럼명은 엑셀에 따라 다를 수 있음)
-        is_diva = any(pd.notna(row.get(c)) for c in row.index if '신호' in str(c) or '날짜_diva' in str(c))
-        return ['background-color: #ffffcc' if is_diva else '' for _ in row]
-
-    st.dataframe(result.style.apply(style_rows, axis=1).format({
-        '현재가': '{:,.0f}', '수급점수': '{:.0f}'
-    }, na_rep='-'), use_container_width=True)
-
-    # 종목 이력 검색
-    st.divider()
-    search_stock = st.text_input("🔎 종목 이력 검색")
-    if search_stock:
-        history = df_all_data[df_all_data['종목명'].str.contains(search_stock.upper(), na=False)].sort_values('날짜')
-        if not history.empty:
-            st.line_chart(history.set_index('날짜')['현재가'])
+        st.error(f"{target_date}.xlsx 파일을 찾을 수 없습니다. data 폴더에 파일이 있는지 확인해주세요.")
 else:
-    st.warning("data 폴더 내의 파일을 불러올 수 없습니다. 파일명에 날짜(2026-03-06)가 포함되어 있는지 확인해주세요.")
+    st.info("왼쪽에서 날짜를 입력하고 [데이터 불러오기] 버튼을 눌러주세요.")
