@@ -14,19 +14,21 @@ def to_num(v):
         return float(s)
     except: return 0.0
 
-# --- 🚩 무적 제목 찾기 함수 (에러 방지 핵심) ---
+# --- 🚩 중복 제목 및 제목 찾기 보정 함수 (에러 방지 핵심) ---
 def get_clean_df(content, target_keyword='종목명'):
-    # 상단 15줄까지 뒤지면서 키워드가 있는 줄을 찾습니다
     for i in range(15):
         try:
             temp_df = pd.read_excel(BytesIO(content), skiprows=i)
             # 컬럼명 중에 키워드가 포함되어 있는지 확인
-            if any(target_keyword in str(col) for col in temp_df.columns):
-                # 키워드가 포함된 정확한 컬럼명으로 리네임 (예: ' 종목명 ' -> '종목명')
-                new_cols = {col: target_keyword for col in temp_df.columns if target_keyword in str(col)}
+            matches = [col for col in temp_df.columns if target_keyword in str(col)]
+            if matches:
+                # 🚩 중복된 제목이 있을 경우 첫 번째 것만 유지하고 나머지는 제거
+                temp_df = temp_df.loc[:, ~temp_df.columns.duplicated()]
+                # 키워드가 포함된 컬럼명을 표준화 (예: ' 종목명.1' -> '종목명')
+                new_cols = {matches[0]: target_keyword}
                 return temp_df.rename(columns=new_cols)
         except: continue
-    return pd.DataFrame() # 못 찾으면 빈 데이터프레임 반환
+    return pd.DataFrame()
 
 # --- 수급 데이터 추출 로직 ---
 def get_flow_data(row):
@@ -83,20 +85,20 @@ if run_btn:
             else:
                 main_df = all_dfs[e_str].copy()
                 
-                # 1. 수급 데이터
+                # 1. 수급 데이터 연동
                 res_f = requests.get(f"https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/{e_str}_수급.xlsx")
                 if res_f.status_code == 200:
                     df_f = get_clean_df(res_f.content, target_keyword='외국인')
-                    # 종목명 찾기 (수급 파일용)
-                    if '종목명' not in df_f.columns:
-                        df_f = get_clean_df(res_f.content, target_keyword='종목명')
+                    if '종목명' not in df_f.columns: df_f = get_clean_df(res_f.content, target_keyword='종목명')
                     
                     if '종목명' in df_f.columns:
+                        # 🚩 수급 파일도 제목 중복 제거 적용
+                        df_f = df_f.loc[:, ~df_f.columns.duplicated()]
                         flow_res = df_f.apply(get_flow_data, axis=1, result_type='expand')
                         df_f['외국인순값'], df_f['기관순값'], df_f['수급점수'] = flow_res[0], flow_res[1], flow_res[2]
                         main_df = pd.merge(main_df, df_f[['종목명', '외국인순값', '기관순값', '수급점수']], on='종목명', how='left')
 
-                # 2. 등장횟수 / 연속등장 / 계좌증가
+                # 2. 등장횟수 / 연속등장 / 계좌증가 계산
                 valid_dfs = [df[['종목명']] for df in all_dfs.values() if '종목명' in df.columns]
                 if valid_dfs:
                     counts = pd.concat(valid_dfs).groupby('종목명').size().to_dict()
@@ -116,17 +118,18 @@ if run_btn:
                     main_df = pd.merge(main_df, all_dfs[s_str][['종목명', '계좌수']], on='종목명', how='left', suffixes=('', '_시작'))
                     main_df['계좌수 증가'] = main_df['계좌수'].apply(to_num) - main_df['계좌수_시작'].apply(to_num).fillna(0)
 
-                # 3. DIVA 및 상승률
+                # 3. DIVA 연동 및 상승률
                 res_v = requests.get("https://raw.githubusercontent.com/cellala26-tech/kiwoom-analysis/main/data/DIVA.xlsx")
                 if res_v.status_code == 200:
                     v_df = get_clean_df(res_v.content)
                     if not v_df.empty:
+                        v_df = v_df.loc[:, ~v_df.columns.duplicated()]
                         v_last = v_df.sort_values(by=v_df.columns[0]).groupby('종목명').last().reset_index()
                         main_df = pd.merge(main_df, v_last, on='종목명', how='left', suffixes=('', '_v'))
 
                 main_df.rename(columns={'날짜': '디바신호일', '종가': '기준종가', '현재가': '현재종가'}, inplace=True)
                 
-                # 컬럼 순서 및 필터링
+                # 결과 컬럼 구성
                 cols = ['순위', '종목코드', '종목명', '등장횟수', '연속등장', '계좌수 증가', '디바신호일', '기준종가', '현재종가', '수급점수']
                 result_display = main_df[[c for c in cols if c in main_df.columns]].copy()
                 
