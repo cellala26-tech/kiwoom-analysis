@@ -1,36 +1,41 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>키움 증권 분석 히트맵</title>
+    <meta charset="UTF-8">
+    <title>국내 증시 실시간 히트맵</title>
     <style>
-        body { background-color: #131722; color: white; text-align: center; font-family: sans-serif; }
+        body { background-color: #131722; color: white; text-align: center; font-family: 'Malgun Gothic', sans-serif; }
         h1 { margin-top: 30px; }
+        .container { padding: 20px; }
     </style>
 </head>
 <body>
-    <h1>📊 실시간 시장 히트맵 (S&P 500)</h1>
-    
-    <div class="tradingview-widget-container" style="margin: 0 auto; width: 90%;">
-      <div class="tradingview-widget-container__widget"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-stock-heatmap.js" async>
-      {
-      "exchanges": [],
-      "dataSource": "S&P500",
-      "grouping": "sector",
-      "blockSize": "market_cap_basic",
-      "blockColor": "change",
-      "locale": "kr",
-      "symbolUrl": "",
-      "colorTheme": "dark",
-      "hasTopBar": false,
-      "isDataSetEnabled": false,
-      "isZoomEnabled": true,
-      "hasSymbolTooltip": true,
-      "width": "100%",
-      "height": "600"
-    }
-      </script>
+    <div class="container">
+        <h1>🇰🇷 국내 증시 실시간 히트맵 (KOSPI & KOSDAQ)</h1>
+        <p>삼성전자부터 코스닥 우량주까지 한눈에 확인하세요</p>
+        
+        <div class="tradingview-widget-container" style="margin: 0 auto; width: 95%;">
+          <div class="tradingview-widget-container__widget"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-stock-heatmap.js" async>
+          {
+            "exchanges": ["KRX"],
+            "dataSource": "AllKorea",
+            "grouping": "sector",
+            "blockSize": "market_cap_basic",
+            "blockColor": "change",
+            "locale": "kr",
+            "symbolUrl": "",
+            "colorTheme": "dark",
+            "hasTopBar": true,
+            "isDataSetEnabled": false,
+            "isZoomEnabled": true,
+            "hasSymbolTooltip": true,
+            "width": "100%",
+            "height": "650"
+          }
+          </script>
+        </div>
+        <p style="margin-top: 20px; color: #888;">데이터 제공: TradingView (한국 거래소 지연 시세 반영)</p>
     </div>
-    <p>어제보다 더 나은 수익률을 위해! 화이팅!</p>
 </body>
 </html>
