@@ -1,20 +1,21 @@
 <!DOCTYPE html>
-<html>
+<html lang="ko">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>국내 증시 실시간 히트맵</title>
     <style>
-        body { background-color: #131722; color: white; text-align: center; font-family: 'Malgun Gothic', sans-serif; }
-        h1 { margin-top: 30px; }
+        body { background-color: #131722; color: white; text-align: center; font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; margin: 0; padding: 0; }
         .container { padding: 20px; }
+        h1 { font-size: 24px; margin-bottom: 10px; color: #d1d4dc; }
+        .footer-text { margin-top: 20px; font-size: 18px; color: #2962ff; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🇰🇷 국내 증시 실시간 히트맵 (KOSPI & KOSDAQ)</h1>
-        <p>삼성전자부터 코스닥 우량주까지 한눈에 확인하세요</p>
         
-        <div class="tradingview-widget-container" style="margin: 0 auto; width: 95%;">
+        <div class="tradingview-widget-container" style="margin: 0 auto; width: 98%;">
           <div class="tradingview-widget-container__widget"></div>
           <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-stock-heatmap.js" async>
           {
@@ -35,7 +36,7 @@
           }
           </script>
         </div>
-        <p style="margin-top: 20px; color: #888;">데이터 제공: TradingView (한국 거래소 지연 시세 반영)</p>
+        <p class="footer-text">어제보다 더 나은 수익률을 위해! 화이팅! 🍓🚀</p>
     </div>
 </body>
 </html>
